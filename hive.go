@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum/hive/internal/crossplatform"
 	"github.com/ethereum/hive/internal/libdocker"
 	"github.com/ethereum/hive/internal/libhive"
 	"gopkg.in/inconshreveable/log15.v2"
@@ -263,10 +264,17 @@ func (r *simRunner) run(ctx context.Context, sim string) error {
 	}
 	defer shutdownServer(server)
 
+	simulatorAddr := "http://" + addr.String()
+
+	if crossplatform.IsMac() {
+		port := strings.Split(addr.String(), ":")[1]
+		simulatorAddr = "http://host.docker.internal:" + port
+	}
+
 	// Create the simulator container.
 	opts := libhive.ContainerOptions{
 		Env: map[string]string{
-			"HIVE_SIMULATOR":    "http://" + addr.String(),
+			"HIVE_SIMULATOR":    simulatorAddr,
 			"HIVE_PARALLELISM":  strconv.Itoa(r.env.SimParallelism),
 			"HIVE_LOGLEVEL":     strconv.Itoa(r.env.SimLogLevel),
 			"HIVE_TEST_PATTERN": r.env.SimTestPattern,
@@ -325,13 +333,20 @@ func (r *simRunner) run(ctx context.Context, sim string) error {
 // on the docker bridge and executing them until it is torn down.
 func startTestSuiteAPI(tm *libhive.TestManager) (net.Addr, *http.Server, error) {
 	// Find the IP address of the host container
-	bridge, err := libdocker.LookupBridgeIP(log15.Root())
-	if err != nil {
-		log15.Error("failed to lookup bridge IP", "error", err)
-		return nil, nil, err
-	}
-	log15.Debug("docker bridge IP found", "ip", bridge)
 
+	var bridge string
+	if crossplatform.IsMac() {
+		bridge = "0.0.0.0"
+	} else {
+		bridgeAddr, err := libdocker.LookupBridgeIP(log15.Root())
+		if err != nil {
+			log15.Error("failed to lookup bridge IP", "error", err)
+			return nil, nil, err
+		}
+		bridge = fmt.Sprintf("%s", bridgeAddr)
+	}
+
+	log15.Debug("docker bridge IP found", "ip", bridge)
 	// Serve connections until the listener is terminated
 	log15.Debug("starting simulator API server")
 

@@ -11,9 +11,12 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/rpc"
+	"github.com/ethereum/hive/internal/crossplatform"
 	"github.com/ethereum/hive/internal/libhive"
 	docker "github.com/fsouza/go-dockerclient"
 	"gopkg.in/inconshreveable/log15.v2"
@@ -74,12 +77,27 @@ func (b *ContainerBackend) CreateContainer(ctx context.Context, imageName string
 	for key, val := range opt.Env {
 		vars = append(vars, key+"="+val)
 	}
+
+	var hostConfig *docker.HostConfig
+
+	if strings.HasPrefix(imageName, "hive/clients") && crossplatform.IsMac() {
+		b.logger.Debug("macos: client found, binding 8545 to a random host port")
+
+		portBindings := map[docker.Port][]docker.PortBinding{
+			"8545/tcp": {{HostIP: "", HostPort: "0"}},
+		}
+
+		hostConfig = &docker.HostConfig{
+			PortBindings: portBindings,
+		}
+	}
 	c, err := b.client.CreateContainer(docker.CreateContainerOptions{
 		Context: ctx,
 		Config: &docker.Config{
 			Image: imageName,
 			Env:   vars,
 		},
+		HostConfig: hostConfig,
 	})
 	if err != nil {
 		return "", err
@@ -134,12 +152,29 @@ func (b *ContainerBackend) StartContainer(ctx context.Context, containerID strin
 	info.IP = container.NetworkSettings.IPAddress
 	info.MAC = container.NetworkSettings.MacAddress
 
+	portToCheck := fmt.Sprintf("%d", opt.CheckLive)
+
+	addr := fmt.Sprintf("%s:%s", info.IP, portToCheck)
+
+	// MacOS doesn't support bridge networking, so we instead are using host ports opened
+	// to be able to control containers
+	if crossplatform.IsMac() {
+		b.logger.Debug("MacOS detected, will have adjustments")
+		for port, bindings := range container.NetworkSettings.Ports {
+			if strings.HasPrefix(string(port), fmt.Sprintf("%s/", portToCheck)) && len(bindings) > 0 {
+				newPortToCheck := bindings[0].HostPort
+				b.logger.Debug("Replacing 8545 healthcheck", "newPort", newPortToCheck)
+				portToCheck = newPortToCheck
+			}
+		}
+		addr = fmt.Sprintf("%s:%s", "localhost" /*info.IP*/, portToCheck)
+	}
+
 	// Set up the port check if requested.
 	hasStarted := make(chan struct{})
 	if opt.CheckLive != 0 {
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		addr := fmt.Sprintf("%s:%d", info.IP, opt.CheckLive)
 		go checkPort(ctx, logger, addr, hasStarted)
 	} else {
 		close(hasStarted)
@@ -183,8 +218,16 @@ func checkPort(ctx context.Context, logger log15.Logger, addr string, notify cha
 			conn, err := dialer.DialContext(ctx, "tcp", addr)
 			if err == nil {
 				conn.Close()
-				close(notify)
-				return
+				var client *rpc.Client
+				client, err = rpc.DialHTTP("http://" + addr)
+				if err == nil {
+					defer client.Close()
+					err = client.Call(nil, "eth_getBlockByNumber", "latest", false)
+					if err == nil {
+						close(notify)
+						return
+					}
+				}
 			}
 		}
 	}
