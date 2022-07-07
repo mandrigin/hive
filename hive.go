@@ -334,8 +334,31 @@ func (r *simRunner) run(ctx context.Context, sim string) error {
 func startTestSuiteAPI(tm *libhive.TestManager) (net.Addr, *http.Server, error) {
 	// Find the IP address of the host container
 
+	var ip net.IP
+
+	if isRunningInDockerContainer() {
+		log15.Info("hive is running in a docker container")
+
+		addrs, err := net.InterfaceAddrs()
+		if err != nil {
+			log15.Error("error getting container ip address")
+		}
+
+		for _, a := range addrs {
+			if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+				if ipnet.IP.To4() != nil {
+					ip = ipnet.IP
+					break
+				}
+			}
+		}
+	}
+
 	var bridge string
-	if crossplatform.IsMac() {
+	if ip != nil {
+		bridge = ip.String()
+		log15.Info("setting ip to container ip")
+	} else if crossplatform.IsMac() {
 		bridge = "0.0.0.0"
 	} else {
 		bridgeAddr, err := libdocker.LookupBridgeIP(log15.Root())
@@ -386,4 +409,12 @@ func splitAndTrim(input, sep string) []string {
 		list[i] = strings.TrimSpace(list[i])
 	}
 	return list
+}
+
+func isRunningInDockerContainer() bool {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+
+	return false
 }
