@@ -86,6 +86,13 @@ directory (note the first `/`, matching any suite name):
 
     ./hive --sim ethereum/consensus --sim.limit /stBugs/
 
+### Run hive in docker container
+The following command is an example which shows building and running a hive container:
+
+    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -it $(docker build -q .) --sim ethereum/sync --client erigon --docker.output --loglevel 5
+
+Note this runs the erigon client with the docker output piped to stdout, and the highest log level set.
+
 ## Viewing simulation results (hiveview)
 
 The results of hive simulation runs are stored in JSON files containing test results, and
