@@ -82,6 +82,7 @@ func LookupBridgeIP(logger log15.Logger) (net.IP, error) {
 			}
 		}
 	}
+
 	// Crap, no IPv4 found, bounce
 	return nil, errors.New("not found")
 }
